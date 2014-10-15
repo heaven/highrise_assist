@@ -30,17 +30,22 @@ module HighriseAssist
         fetch_tags if options[:tag]
 
         %w(Person Company).each do |type|
-          collection = fetch_collection(type)
-          store_collection(collection)
-          @parties[type] = collection
+          @parties[type] ||= []
+
+          fetch_collection(type) do |collection|
+            store_collection(collection)
+            @parties[type] |= collection
+          end
         end
 
         %w(Kase Deal).each do |type|
           next if options[:skip_items].include?(type)
-          collection = fetch_collection(type)
-          filter_casedeal_collection!(collection)
-          store_collection(collection)
-          symlink_casedeal_collection(collection)
+
+          fetch_collection(type) do |collection|
+            filter_casedeal_collection!(collection)
+            store_collection(collection)
+            symlink_casedeal_collection(collection)
+          end
         end
 
         log "Done."
@@ -54,20 +59,40 @@ module HighriseAssist
         @tags.empty? and abort "Unknown tag #{options[:tag]}"
       end
 
-      def fetch_collection(type)
+      def fetch_collection(type, &block)
         klass = Highrise.const_get(type)
+
         if @tags.empty?
-          collection = klass.find(:all) || []
+          paginate_collection(klass, &block)
         else
           collection = []
+
           @tags.each do |tag|
-            collection += klass.find(:all, :params => { :tag_id => tag.id } )
+            paginate_collection(klass, :params => { :tag_id => tag.id }) do |records|
+              collection |= records
+            end
           end
-          collection.uniq!
+
+          yield collection
         end
-        log ""
-        log "# #{type}: Found #{collection.size} items"
-        collection
+
+        nil
+      end
+
+      def paginate_collection(klass, options = {})
+        options[:params] ||= {}
+        options[:params][:n] ||= 0
+
+        loop do
+          records = klass.find(:all, options)
+          break unless records.try(:any?)
+
+          log "\n# #{klass.name}: Found #{records.size} items"
+
+          options[:params][:n] += records.size
+
+          yield records if block_given?
+        end
       end
 
       # Person, Company, Kase, Deal
